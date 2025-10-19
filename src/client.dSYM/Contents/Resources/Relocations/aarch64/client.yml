@@ -1,0 +1,13 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     client
+relocations:
+  - { offsetInCU: 0x2D86, offset: 0x2D86, size: 0x8, addend: 0x0, symName: __ZNSt3__124__put_character_sequenceB7v160006IcNS_11char_traitsIcEEEERNS_13basic_ostreamIT_T0_EES7_PKS4_m, symObjAddr: 0x2FC, symBinAddr: 0x10000392C, symSize: 0x168 }
+  - { offsetInCU: 0x52F8, offset: 0x52F8, size: 0x8, addend: 0x0, symName: __ZNSt3__14endlB7v160006IcNS_11char_traitsIcEEEERNS_13basic_ostreamIT_T0_EES7_, symObjAddr: 0x268, symBinAddr: 0x100003898, symSize: 0x94 }
+  - { offsetInCU: 0x5385, offset: 0x5385, size: 0x8, addend: 0x0, symName: __ZNSt3__116__pad_and_outputB7v160006IcNS_11char_traitsIcEEEENS_19ostreambuf_iteratorIT_T0_EES6_PKS4_S8_S8_RNS_8ios_baseES4_, symObjAddr: 0x464, symBinAddr: 0x100003A94, symSize: 0x194 }
+  - { offsetInCU: 0x5C23, offset: 0x5C23, size: 0x8, addend: 0x0, symName: __ZNSt3__120__throw_length_errorB7v160006EPKc, symObjAddr: 0x60C, symBinAddr: 0x100003C3C, symSize: 0x50 }
+  - { offsetInCU: 0x8712, offset: 0x8712, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100003630, symSize: 0x25C }
+  - { offsetInCU: 0x9455, offset: 0x9455, size: 0x8, addend: 0x0, symName: __ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE20__throw_length_errorB7v160006Ev, symObjAddr: 0x5F8, symBinAddr: 0x100003C28, symSize: 0x14 }
+  - { offsetInCU: 0x947E, offset: 0x947E, size: 0x8, addend: 0x0, symName: __ZNSt3__120__throw_length_errorB7v160006EPKc, symObjAddr: 0x60C, symBinAddr: 0x100003C3C, symSize: 0x50 }
+  - { offsetInCU: 0x9489, offset: 0x9489, size: 0x8, addend: 0x0, symName: __ZNSt12length_errorC1B7v160006EPKc, symObjAddr: 0x65C, symBinAddr: 0x100003C8C, symSize: 0x24 }
+...
