@@ -5,21 +5,75 @@
 #include <unistd.h>
 #include <string>
 
+const int32_t max_message = 4096;
+
 static void die(const std::string& s) {
     std::cout << s << std::endl;
     abort();
 }
 
-void do_something(int connection_fd) {
-    char read_buffer[64] = {};
-    ssize_t rv = read(connection_fd, read_buffer, sizeof(read_buffer) - 1);
-    if (rv < 0) {
-        std::cout << "read() error" << std::endl;
-        return;
+static void msg(const std::string& s) {
+    std::cout << s << std::endl;
+}
+
+static int read_full(int connection_fd, char* read_buffer, int n) {
+    while (n > 0) {
+        ssize_t rv = read(connection_fd, read_buffer, n);
+        if (rv <= 0)  {
+            return -1;
+        }
+        n -= rv;
+        read_buffer += rv;
     }
-    std::cout << "client says: " << read_buffer << std::endl;
-    char write_buffer[] = "world";
-    write(connection_fd, write_buffer, strlen(write_buffer));
+    return 0;
+}
+
+static int write_full(int connection_fd, char* write_buffer, int n) {
+    while (n > 0) {
+        ssize_t wv = write(connection_fd, write_buffer, n);
+        if (wv < 0) {
+            return -1;
+        }
+        write_buffer += wv;
+        n -= wv;
+    }
+    return 0;
+}
+
+static int do_something(int connection_fd) {
+    /*
+    read from client
+    check message length
+    discard if length too long/error
+    else read the rest of the message
+    write back a message of its own
+    */
+    char read_buffer[4 + max_message] = {};
+    int rv = read_full(connection_fd, read_buffer, 4);
+    if (rv) {
+        msg("READ ERROR");
+        return -1;
+    }
+    int msg_size;
+    memcpy(&msg_size, read_buffer, 4);
+    if (msg_size > max_message) {
+        msg("message too long");
+        return -1;
+    }
+    
+    rv = read_full(connection_fd, &read_buffer[4], msg_size);
+    if (rv) {
+        msg("READ ERROR");
+        return -1;
+    }
+    std::cout << "client says: " << &read_buffer[4] << std::endl;
+    char response[] = "world";
+    char write_buffer[4 + strlen(response)];
+    size_t response_size = strlen(response);
+    memcpy(write_buffer, &response_size, 4);
+    memcpy(&write_buffer[4], response, response_size);
+    rv = write_full(connection_fd, write_buffer, 4 + response_size);
+    return 0;
 }
 
 int main() {
@@ -36,6 +90,9 @@ int main() {
     if (rv) {
         die("listen()");
     }
+
+    msg("Server listening on port 1234...");
+
     while (true) {
         sockaddr_in client_addr = {};
         socklen_t addr_len = sizeof(client_addr);
