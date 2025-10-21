@@ -9,7 +9,7 @@
 
 class Client {
 private:
-    const size_t max_read_size = 4096;
+    const size_t max_read_size = 32<<21;
     const size_t max_write_size = 32 << 20;
     int fd;
 

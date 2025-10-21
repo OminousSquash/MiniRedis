@@ -21,7 +21,7 @@ struct Conn
 class Server
 {
 private:
-    const int32_t max_read = 32 << 20;
+    const int32_t max_read = 32 << 21;
     const int32_t max_write = 4096;
     std::vector<Conn *> conns;
     std::vector<struct pollfd> poll_args;
@@ -86,7 +86,7 @@ private:
             return false;
         }
         uint8_t *data = &connection->read_buffer[4];
-
+        std::cout << "client says: " << std::string((char*)data, len) << std::endl;
         buffer_append(connection->write_buffer, (uint8_t *)&len, 4);
         buffer_append(connection->write_buffer, data, len);
 
@@ -109,7 +109,11 @@ private:
         }
         if (read_bytes == 0)
         {
-            msg("unexpected EOF");
+            if (connection->read_buffer.size() == 0) {
+                msg("client closed");
+            } else {
+                msg("unexpected EOF");
+            }
             connection->want_close = true;
             return;
         }
@@ -124,16 +128,11 @@ private:
         {
         }
 
-        if (!connection->read_buffer.empty())
-        {
-            connection->want_read = true;
-            connection->want_write = false;
-            write_nb(connection);
-        }
-        else
+        if (!connection->write_buffer.empty())
         {
             connection->want_read = false;
             connection->want_write = true;
+            return write_nb(connection);
         }
     }
 
