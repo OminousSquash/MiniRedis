@@ -1,106 +1,290 @@
 #include <cstring>
 #include <iostream>
 #include <netinet/in.h>
+#include <string>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <string>
+#include <poll.h>
+#include <fcntl.h>
+#include <assert.h>
 
-const int32_t max_message = 4096;
+struct Conn
+{
+    int fd;
+    bool want_read = false;
+    bool want_write = false;
+    bool want_close = false;
+    std::vector<uint8_t> read_buffer;
+    std::vector<uint8_t> write_buffer;
+};
 
-static void die(const std::string& s) {
-    std::cout << s << std::endl;
-    abort();
-}
+class Server
+{
+private:
+    const int32_t max_read = 32 << 20;
+    const int32_t max_write = 4096;
+    std::vector<Conn *> conns;
+    std::vector<struct pollfd> poll_args;
+    int fd;
 
-static void msg(const std::string& s) {
-    std::cout << s << std::endl;
-}
+private:
+    void die(const std::string &s)
+    {
+        std::cout << s << std::endl;
+        abort();
+    }
 
-static int read_full(int connection_fd, char* read_buffer, int n) {
-    while (n > 0) {
-        ssize_t rv = read(connection_fd, read_buffer, n);
-        if (rv <= 0)  {
-            return -1;
+    void msg(const std::string &s)
+    {
+        std::cout << s << std::endl;
+    }
+
+    Conn *handle_accept()
+    {
+        sockaddr_in client_socket = {};
+        socklen_t size = sizeof(client_socket);
+        int connfd = accept(fd, (sockaddr *)&client_socket, &size);
+        if (connfd < 0)
+        {
+            die("accept()");
+            return nullptr;
         }
-        n -= rv;
-        read_buffer += rv;
-    }
-    return 0;
-}
 
-static int write_full(int connection_fd, char* write_buffer, int n) {
-    while (n > 0) {
-        ssize_t wv = write(connection_fd, write_buffer, n);
-        if (wv < 0) {
-            return -1;
+        fd_set_nb(connfd);
+
+        Conn *new_conn = new Conn();
+        new_conn->want_read = true;
+        new_conn->fd = connfd;
+        return new_conn;
+    }
+
+    void buffer_append(std::vector<uint8_t> &buffer, const uint8_t *data, int n)
+    {
+        buffer.insert(buffer.end(), data, data + n);
+    }
+
+    void buffer_erase(std::vector<uint8_t> &buffer, int n)
+    {
+        buffer.erase(buffer.begin(), buffer.begin() + n);
+    }
+
+    bool one_more_request(Conn *connection)
+    {
+        if (connection->read_buffer.size() < 4)
+        {
+            return false;
         }
-        write_buffer += wv;
-        n -= wv;
-    }
-    return 0;
-}
-
-static int do_something(int connection_fd) {
-    /*
-    read from client
-    check message length
-    discard if length too long/error
-    else read the rest of the message
-    write back a message of its own
-    */
-    char read_buffer[4 + max_message] = {};
-    int rv = read_full(connection_fd, read_buffer, 4);
-    if (rv) {
-        msg("READ ERROR");
-        return -1;
-    }
-    int msg_size;
-    memcpy(&msg_size, read_buffer, 4);
-    if (msg_size > max_message) {
-        msg("message too long");
-        return -1;
-    }
-    
-    rv = read_full(connection_fd, &read_buffer[4], msg_size);
-    if (rv) {
-        msg("READ ERROR");
-        return -1;
-    }
-    std::cout << "client says: " << &read_buffer[4] << std::endl;
-    char response[] = "world";
-    char write_buffer[4 + strlen(response)];
-    size_t response_size = strlen(response);
-    memcpy(write_buffer, &response_size, 4);
-    memcpy(&write_buffer[4], response, response_size);
-    rv = write_full(connection_fd, write_buffer, 4 + response_size);
-    return 0;
-}
-
-int main() {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int val = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-    sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(1234);
-    server_addr.sin_addr.s_addr = htonl(0);
-    int rv = bind(fd, (const struct sockaddr* )&server_addr, sizeof(server_addr));
-    if (rv) { die("bind()"); }
-    rv = listen(fd, SOMAXCONN);
-    if (rv) {
-        die("listen()");
-    }
-
-    msg("Server listening on port 1234...");
-
-    while (true) {
-        sockaddr_in client_addr = {};
-        socklen_t addr_len = sizeof(client_addr);
-        int connection_fd = accept(fd, (struct sockaddr*)&client_addr, &addr_len);
-        if (connection_fd < 0) {
-            continue;
+        int len;
+        memcpy(&len, &connection->read_buffer[0], 4);
+        if (len > max_read)
+        {
+            msg("message too long");
+            return false;
         }
-        do_something(connection_fd);
-        close(connection_fd);
+        if (4 + len > connection->read_buffer.size())
+        {
+            return false;
+        }
+        uint8_t *data = &connection->read_buffer[4];
+
+        buffer_append(connection->write_buffer, (uint8_t *)&len, 4);
+        buffer_append(connection->write_buffer, data, len);
+
+        buffer_erase(connection->read_buffer, 4 + len);
+        return true;
     }
+
+    void read_nb(Conn *connection)
+    {
+        uint8_t buffer[64 * 1028] = {};
+        int read_bytes = read(connection->fd, buffer, sizeof(buffer));
+        if (read_bytes < 0 && errno == EAGAIN)
+        {
+            return;
+        }
+        if (read_bytes < 0)
+        {
+            die("read()");
+            return;
+        }
+        if (read_bytes == 0)
+        {
+            msg("unexpected EOF");
+            connection->want_close = true;
+            return;
+        }
+        if (read_bytes > max_read)
+        {
+            msg("message too long");
+            return;
+        }
+        buffer_append(connection->read_buffer, buffer, read_bytes);
+
+        while (one_more_request(connection))
+        {
+        }
+
+        if (!connection->read_buffer.empty())
+        {
+            connection->want_read = true;
+            connection->want_write = false;
+            write_nb(connection);
+        }
+        else
+        {
+            connection->want_read = false;
+            connection->want_write = true;
+        }
+    }
+
+    void write_nb(Conn *connection)
+    {
+        assert(connection->write_buffer.size() > 0);
+        ssize_t bytes_written = write(connection->fd, &connection->write_buffer[0], connection->write_buffer.size());
+        if (bytes_written < 0 && errno == EINTR)
+        {
+            return;
+        }
+        if (bytes_written < 0)
+        {
+            msg("write() error");
+            connection->want_close = true;
+            return;
+        }
+        buffer_erase(connection->write_buffer, bytes_written);
+        if (connection->write_buffer.size() == 0)
+        {
+            connection->want_read = true;
+            connection->want_write = false;
+        }
+        else
+        {
+            connection->want_write = true;
+            connection->want_read = false;
+        }
+    }
+
+    void fd_set_nb(int fd)
+    {
+        errno = 0;
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (errno)
+        {
+            die("fcntl error");
+            return;
+        }
+
+        flags |= O_NONBLOCK;
+
+        errno = 0;
+        (void)fcntl(fd, F_SETFL, flags);
+        if (errno)
+        {
+            die("fcntl error");
+        }
+    }
+
+public:
+    Server()
+    {
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        int val = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+        sockaddr_in server_addr;
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(1234);
+        server_addr.sin_addr.s_addr = htonl(0);
+        int rv = bind(fd, (const struct sockaddr *)&server_addr, sizeof(server_addr));
+        if (rv)
+        {
+            die("bind()");
+        }
+        fd_set_nb(fd);
+        rv = listen(fd, SOMAXCONN);
+        if (rv)
+        {
+            die("listen()");
+        }
+        msg("Server listening on port 1234...");
+    }
+
+    void event_loop()
+    {
+        while (true)
+        {
+            poll_args.clear();
+            pollfd listening_fd = {fd, POLLIN, 0};
+            poll_args.emplace_back(listening_fd);
+            for (Conn *conn : conns)
+            {
+                if (conn == nullptr)
+                {
+                    continue;
+                }
+                pollfd conn_fd = {conn->fd, POLLERR, 0};
+                if (conn->want_read)
+                {
+                    conn_fd.events |= POLLIN;
+                }
+                if (conn->want_write)
+                {
+                    conn_fd.events |= POLLOUT;
+                }
+                poll_args.push_back(conn_fd);
+            }
+            int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
+            if (rv < 0 && errno == EINTR)
+            {
+                continue; // not an error
+            }
+            if (rv < 0)
+            {
+                die("poll");
+            }
+            // check if new connections are opened
+            if (poll_args[0].revents)
+            {
+                Conn *new_conn = handle_accept();
+                if (new_conn)
+                {
+                    if (new_conn->fd < conns.size()) {
+                        conns[new_conn->fd] = new_conn;
+                    } else {
+                        conns.resize(new_conn->fd + 1);
+                        conns[new_conn->fd] = new_conn;
+                    }
+                }
+            }
+            for (int i = 1; i < poll_args.size(); i++)
+            {
+                short ready = poll_args[i].revents;
+                if (ready == 0)
+                {
+                    continue;
+                }
+                pollfd &poll_fd = poll_args[i];
+                Conn *conn = conns[poll_fd.fd];
+                if (ready & POLLIN)
+                {
+                    read_nb(conn);
+                }
+                if (ready & POLLOUT)
+                {
+                    write_nb(conn);
+                }
+                if (ready & POLLERR || conn->want_close)
+                {
+                    close(conn->fd);
+                    delete conns[conn->fd];
+                    conns[conn->fd] = nullptr;
+                }
+            }
+        }
+    }
+};
+
+int main()
+{
+    Server server;
+    server.event_loop();
 }
