@@ -1,0 +1,10 @@
+# Binaries
+client
+server
+
+# Object files
+*.o
+*.out
+
+# Debug symbol folders
+*.dSYM/
