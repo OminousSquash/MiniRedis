@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <assert.h>
+#include "./headers/Buffer.h"
 
 struct Conn
 {
@@ -14,8 +15,9 @@ struct Conn
     bool want_read = false;
     bool want_write = false;
     bool want_close = false;
-    std::vector<uint8_t> read_buffer;
-    std::vector<uint8_t> write_buffer;
+    Buffer read_buf;
+    Buffer write_buf;
+    Conn() : read_buf(), write_buf() {}
 };
 
 class Server
@@ -58,39 +60,39 @@ private:
         return new_conn;
     }
 
-    void buffer_append(std::vector<uint8_t> &buffer, const uint8_t *data, int n)
+    void buffer_append(Buffer& buffer, const uint8_t *data, int n)
     {
-        buffer.insert(buffer.end(), data, data + n);
+        buffer.buffer_append(data, n);
     }
 
-    void buffer_erase(std::vector<uint8_t> &buffer, int n)
+    void buffer_consume(Buffer& buffer, int n)
     {
-        buffer.erase(buffer.begin(), buffer.begin() + n);
+        buffer.buffer_consume(n);
     }
 
     bool one_more_request(Conn *connection)
     {
-        if (connection->read_buffer.size() < 4)
+        if (connection->read_buf.size() < 4)
         {
             return false;
         }
         int len;
-        memcpy(&len, &connection->read_buffer[0], 4);
+        memcpy(&len, (connection->read_buf).data_begin, 4);
         if (len > max_read)
         {
             msg("message too long");
             return false;
         }
-        if (4 + len > connection->read_buffer.size())
+        if (4 + len > connection->read_buf.size())
         {
             return false;
         }
-        uint8_t *data = &connection->read_buffer[4];
+        uint8_t *data = (connection->read_buf).data_begin + 4;
         std::cout << "client says: " << std::string((char*)data, len) << std::endl;
-        buffer_append(connection->write_buffer, (uint8_t *)&len, 4);
-        buffer_append(connection->write_buffer, data, len);
+        buffer_append(connection->write_buf, (uint8_t *)&len, 4);
+        buffer_append(connection->write_buf, data, len);
 
-        buffer_erase(connection->read_buffer, 4 + len);
+        buffer_consume(connection->read_buf, 4 + len);
         return true;
     }
 
@@ -109,7 +111,7 @@ private:
         }
         if (read_bytes == 0)
         {
-            if (connection->read_buffer.size() == 0) {
+            if (connection->read_buf.size() == 0) {
                 msg("client closed");
             } else {
                 msg("unexpected EOF");
@@ -122,13 +124,13 @@ private:
             msg("message too long");
             return;
         }
-        buffer_append(connection->read_buffer, buffer, read_bytes);
+        buffer_append(connection->read_buf, buffer, read_bytes);
 
         while (one_more_request(connection))
         {
         }
 
-        if (!connection->write_buffer.empty())
+        if (!connection->write_buf.empty())
         {
             connection->want_read = false;
             connection->want_write = true;
@@ -138,8 +140,8 @@ private:
 
     void write_nb(Conn *connection)
     {
-        assert(connection->write_buffer.size() > 0);
-        ssize_t bytes_written = write(connection->fd, &connection->write_buffer[0], connection->write_buffer.size());
+        assert(connection->write_buf.size() > 0);
+        ssize_t bytes_written = write(connection->fd, connection->write_buf.data_begin, connection->write_buf.size());
         if (bytes_written < 0 && errno == EINTR)
         {
             return;
@@ -150,8 +152,8 @@ private:
             connection->want_close = true;
             return;
         }
-        buffer_erase(connection->write_buffer, bytes_written);
-        if (connection->write_buffer.size() == 0)
+        buffer_consume(connection->write_buf, bytes_written);
+        if (connection->write_buf.size() == 0)
         {
             connection->want_read = true;
             connection->want_write = false;
