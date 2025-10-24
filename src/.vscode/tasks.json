@@ -1,0 +1,49 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "C/C++: g++ build server",
+            "command": "/usr/bin/g++",
+            "args": [
+                "-std=c++17",
+                "-Wall",
+                "-Wextra",
+                "-g",
+                "Server.cpp",
+                "Buffer.cpp",
+                "-o",
+                "${fileDirname}/server"
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": ["$gcc"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Builds the server including Buffer.cpp"
+        },
+        {
+            "type": "cppbuild",
+            "label": "C/C++: g++ build client",
+            "command": "/usr/bin/g++",
+            "args": [
+                "-std=c++17",
+                "-Wall",
+                "-Wextra",
+                "-g",
+                "Client.cpp",
+                "-o",
+                "${fileDirname}/client"
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": ["$gcc"],
+            "group": "build",
+            "detail": "Builds the client"
+        }
+    ]
+}

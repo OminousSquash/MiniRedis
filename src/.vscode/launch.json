@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "configurations": [
+        {
+            "name": "macOS LLDB Debug (Server)",
+            "type": "cpp-lldb",
+            "request": "launch",
+            "program": "${fileDirname}/server",
+            "args": [],
+            "cwd": "${fileDirname}",
+            "preLaunchTask": "C/C++: g++ build server",
+            "stopOnEntry": false,
+            "externalConsole": false
+        },
+        {
+            "name": "macOS LLDB Debug (Client)",
+            "type": "cpp-lldb",
+            "request": "launch",
+            "program": "${fileDirname}/client",
+            "args": ["set", "x", "123"],
+            "cwd": "${fileDirname}",
+            "preLaunchTask": "C/C++: g++ build client",
+            "stopOnEntry": false,
+            "externalConsole": true
+        }
+    ]
+}
