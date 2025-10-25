@@ -1,4 +1,6 @@
 #include "headers/Buffer.h"
+#include <cstdint>
+#include <cstring>
 
 void Buffer::buffer_append(const uint8_t *new_data, int n) {
     if (buffer_begin == nullptr) {
@@ -25,16 +27,17 @@ void Buffer::buffer_consume(int n) {
 
 void Buffer::resize() {
     // double the size
-    int curr_size = buffer_end - buffer_begin;
-    int data_size = data_end - data_begin;
-    int offset_1 = data_begin - buffer_begin;
-    uint8_t* new_buffer_begin = new uint8_t[curr_size * 2];
-    memcpy(new_buffer_begin,data_begin, data_size);
-    delete[] buffer_begin;
+    size_t total_size = buffer_end - buffer_begin;
+    size_t data_size  = data_end - data_begin;
+
+    uint8_t* new_buffer_begin = new uint8_t[2 * total_size];
+    memcpy(new_buffer_begin, data_begin, data_size);
+    delete [] buffer_begin;
+
     buffer_begin = new_buffer_begin;
     data_begin = buffer_begin;
     data_end = data_begin + data_size;
-    buffer_end = buffer_begin + 2 * curr_size;
+    buffer_end = buffer_begin + (2 * total_size);
 }
 
 int Buffer::size() {
@@ -43,8 +46,4 @@ int Buffer::size() {
 
 bool Buffer::empty() {
     return size() == 0;
-}
-
-void Buffer::msg(const std::string& s) {
-    std::cout << s << std::endl;
 }

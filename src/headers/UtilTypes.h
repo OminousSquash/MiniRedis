@@ -1,10 +1,9 @@
 #pragma once
-#include <cmath>
 #include <cstdint>
 #include <vector>
-#include <string>
 #include "HashTable.h"
 #include "DLL.h"
+#include "Buffer.h"
 
 
 enum {
@@ -23,8 +22,8 @@ struct Conn {
     bool want_read = false;
     bool want_write = false;
     bool want_close = false;
-    std::vector<uint8_t> wb;
-    std::vector<uint8_t> rb;
+    Buffer write_buffer;
+    Buffer read_buffer;
     uint64_t last_active_ms = 0;
     Node node;
 };

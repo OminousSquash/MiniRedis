@@ -14,6 +14,7 @@
 #include <netinet/ip.h>
 #include <string>
 #include <vector>
+#include "headers/Buffer.h"
 #include "headers/HashTable.h"
 #include "headers/UtilTypes.h"
 #include "headers/UtilFuncs.h"
@@ -54,9 +55,17 @@ private:
         buf.insert(buf.end(), data, data + len);
     }
 
+    void buf_append(Buffer& buffer, const uint8_t* data, size_t len) {
+        buffer.buffer_append(data, (int) len);
+    }
+
     // remove from the front
     void buf_consume(std::vector<uint8_t>& buf, size_t len) {
         buf.erase(buf.begin(), buf.begin() + len);
+    }
+
+    void buf_consume(Buffer& buffer, size_t len) {
+        buffer.buffer_consume((int) len);
     }
 
     // application callback when the listening socket is ready
@@ -131,7 +140,7 @@ private:
         return 0;
     }
 
-    void make_response(const Response &resp, std::vector<uint8_t>& out) {
+    void make_response(const Response &resp, Buffer& out) {
         uint32_t resp_len = 4 + (uint32_t)resp.data.size();
         buf_append(out, (const uint8_t *)&resp_len, 4);
         buf_append(out, (const uint8_t *)&resp.status, 4);
@@ -139,20 +148,21 @@ private:
     }
 
     bool try_one_request(Conn *conn) {
-        if (conn->rb.size() < 4) {
+        if (conn->read_buffer.size() < 4) {
             return false;   // want read
         }
         uint32_t len = 0;
-        memcpy(&len, conn->rb.data(), 4);
+        memcpy(&len, conn->read_buffer.data_begin, 4);
         if (len > k_max_msg) {
             msg("too long");
             conn->want_close = true;
             return false;   // want close
         }
-        if (4 + len > conn->rb.size()) {
+        if (4 + len > (uint32_t)conn->read_buffer.size()) {
             return false;   // want read
         }
-        const uint8_t *request = &conn->rb[4];
+        uint8_t* data_begin = conn->read_buffer.data_begin;
+        const uint8_t *request = data_begin + 4;
 
         std::vector<std::string> cmd;
         if (parse_req(request, len, cmd) < 0) {
@@ -162,14 +172,14 @@ private:
         }
         Response resp;
         do_request(cmd, resp);
-        make_response(resp, conn->wb);
-        buf_consume(conn->rb, 4 + len);
+        make_response(resp, conn->write_buffer);
+        buf_consume(conn->read_buffer, 4 + len);
         return true;
     }
 
     void handle_write(Conn *conn) {
-        assert(conn->wb.size() > 0);
-        ssize_t rv = write(conn->fd, conn->wb.data(), conn->wb.size());
+        assert(conn->write_buffer.size() > 0);
+        ssize_t rv = write(conn->fd, conn->write_buffer.data_begin, conn->write_buffer.size());
         if (rv < 0 && errno == EAGAIN) {
             return;
         }
@@ -179,9 +189,9 @@ private:
             return;
         }
 
-        buf_consume(conn->wb, (size_t)rv);
+        buf_consume(conn->write_buffer, (size_t)rv);
 
-        if (conn->wb.size() == 0) {
+        if (conn->write_buffer.size() == 0) {
             conn->want_read = true;
             conn->want_write = false;
         }
@@ -200,7 +210,7 @@ private:
             return; // want close
         }
         if (rv == 0) {
-            if (conn->rb.size() == 0) {
+            if (conn->read_buffer.size() == 0) {
                 msg("client closed");
             } else {
                 msg("unexpected EOF");
@@ -208,11 +218,11 @@ private:
             conn->want_close = true;
             return;
         }
-        buf_append(conn->rb, buf, (size_t)rv);
+        buf_append(conn->read_buffer, buf, (size_t)rv);
 
         while (try_one_request(conn)) {}
 
-        if (conn->wb.size() > 0) {    // has a response
+        if (conn->write_buffer.size() > 0) {    // has a response
             conn->want_read = false;
             conn->want_write = true;
             return handle_write(conn);
