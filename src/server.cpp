@@ -17,14 +17,16 @@
 #include "headers/HashTable.h"
 #include "headers/UtilTypes.h"
 #include "headers/UtilFuncs.h"
+#include "headers/DLL.h"
 #include <iostream>
 
 class Server {
 private:
-    std::map<std::string, std::string> g_data;
     HTable htable;
+    DLL dll;
     const size_t k_max_msg = 32 << 20;
     const size_t k_max_args = 200 * 1000;
+    const size_t k_tcp_idle_timeout = 5000;
     int fd;
 private:
     void fd_set_nb(int connfd) {
@@ -76,6 +78,9 @@ private:
         Conn *conn = new Conn();
         conn->fd = connfd;
         conn->want_read = true;
+        uint64_t curr_time = get_monotonic_msec();
+        conn->last_active_ms = curr_time;
+        dll.insert(&conn->node);
         return conn;
     }
 
@@ -283,6 +288,43 @@ private:
             out.status = RES_ERR;
         }
     }
+
+    int determine_timeout() {
+        uint64_t curr_time = get_monotonic_msec();
+        Node* oldest_node = dll.tail->prev;
+        if (oldest_node == dll.head) {
+            return -1;
+        }
+        Conn* connection = get_connection(oldest_node);
+        uint64_t earliest_timeout = connection->last_active_ms + k_tcp_idle_timeout;
+        if (curr_time >= earliest_timeout) {
+            return 0;
+        }
+        return (int)(earliest_timeout - curr_time);
+    }
+
+    void handle_expired_connections(std::vector<Conn*>& fd2conn) {
+        uint64_t curr_time = get_monotonic_msec();
+        Node* node = dll.tail->prev;
+        while (node != dll.head) {
+            Conn* connection = get_connection(node);
+            Node* prev_node = node->prev;
+            if (connection->last_active_ms + k_tcp_idle_timeout > curr_time) {
+                return;
+            }
+            conn_destroy(connection, fd2conn);
+            node = prev_node;
+        }
+    }
+
+    void conn_destroy(Conn* connection, std::vector<Conn*>& fd2conn) {
+        msg("CLOSING CLIENT");
+        (void)close(connection->fd);
+        fd2conn[connection->fd] = NULL;
+        dll.remove(&connection->node);
+        delete connection;
+    }
+
 public:
     Server() : htable(128) {}
 
@@ -330,8 +372,8 @@ public:
                 }
                 poll_args.push_back(pfd);
             }
-
-            int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
+            uint64_t timeout = determine_timeout();
+            int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), timeout);
             if (rv < 0 && errno == EINTR) {
                 continue;
             }
@@ -356,6 +398,9 @@ public:
                 }
 
                 Conn *conn = fd2conn[poll_args[i].fd];
+                conn->last_active_ms = get_monotonic_msec();
+                dll.remove(&conn->node);
+                dll.insert(&conn->node);
                 if (ready & POLLIN) {
                     assert(conn->want_read);
                     handle_read(conn);  // application logic
@@ -366,11 +411,10 @@ public:
                 }
 
                 if ((ready & POLLERR) || conn->want_close) {
-                    (void)close(conn->fd);
-                    fd2conn[conn->fd] = NULL;
-                    delete conn;
+                    conn_destroy(conn, fd2conn);
                 }
             }
+            handle_expired_connections(fd2conn);
         }
     }
 };

@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include "HashTable.h"
+#include "DLL.h"
 
 
 enum {
@@ -23,6 +24,8 @@ struct Conn {
     bool want_close = false;
     std::vector<uint8_t> wb;
     std::vector<uint8_t> rb;
+    uint64_t last_active_ms = 0;
+    Node node;
 };
 
 struct Entry {

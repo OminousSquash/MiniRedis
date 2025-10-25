@@ -22,6 +22,11 @@ Entry* get_entry(HNode* node) {
     return e;
 }
 
+Conn* get_connection(Node* node) {
+    Conn* connection = (Conn*) ((char*)node - offsetof(Conn, node));
+    return connection;
+}
+
 uint64_t fnv_hash(const uint8_t *data, size_t len) {
     uint32_t h = 0x811C9DC5;
     for (size_t i = 0; i < len; i++) {
@@ -35,4 +40,10 @@ bool eq(HNode* left, HNode* right) {
     Entry* e1 = get_entry(left);
     Entry* e2 = get_entry(right);
     return (e1->key == e2->key && left->hash_code == right->hash_code);
+}
+
+int64_t get_monotonic_msec() {
+    struct timespec tv = {0, 0};
+    clock_gettime(CLOCK_MONOTONIC, &tv);
+    return uint64_t(tv.tv_sec) * 1000 + tv.tv_nsec / 1000 / 1000;
 }
