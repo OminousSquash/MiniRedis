@@ -45,6 +45,9 @@ void HTable::h_insert(HNode* node) {
     node->next = htable[idx];
     htable[idx] = node;
     size++;
+    if (1.0 * size / cap >= max_load_factor) {
+        h_resize();
+    }
 }
 
 HNode* HTable::hm_lookup(HNode* target, bool (*eq)(HNode*, HNode*)) {
@@ -57,4 +60,25 @@ HNode* HTable::hm_lookup(HNode* target, bool (*eq)(HNode*, HNode*)) {
 
 void HTable::hm_insert(HNode* new_node) {
     h_insert(new_node);
+}
+
+void HTable::h_resize() {
+    size_t old_cap = cap;
+    HNode** old_table = htable;
+
+    cap = cap << 1;
+    mask = cap - 1;
+    size = 0;
+
+    htable = new HNode*[cap]();
+
+    for (size_t i = 0; i < old_cap; i++) {
+        HNode* node = htable[i];
+        HNode* next_node = node->next;
+        while (node != nullptr) {
+            h_insert(node);
+            node = next_node;
+        }
+    }
+    delete [] old_table;
 }

@@ -14,6 +14,7 @@ private:
     size_t size = 0;
     size_t mask = 0; 
     size_t cap = 0;
+    const float max_load_factor = 0.75;
 
 private:
     HNode** h_lookup(HNode* node, bool (*eq)(HNode*, HNode*));
@@ -21,6 +22,8 @@ private:
     HNode* h_detach(HNode** from);
 
     void h_insert(HNode* node);
+
+    void h_resize();
 public:
     HTable(size_t size);
 
