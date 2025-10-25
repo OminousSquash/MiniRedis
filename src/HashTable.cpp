@@ -1,5 +1,4 @@
 #include "headers/HashTable.h"
-#include <assert.h>
 
 HTable::HTable(size_t cap) {
     assert((cap & (cap - 1)) == 0);

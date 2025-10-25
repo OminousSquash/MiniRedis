@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <cstddef>
+#include <cstdint>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,21 +14,21 @@
 #include <netinet/ip.h>
 #include <string>
 #include <vector>
-#include <map>
-#include "headers/Buffer.h"
 #include "headers/HashTable.h"
 #include "headers/UtilTypes.h"
 #include "headers/UtilFuncs.h"
 #include "headers/DLL.h"
-#include <iostream>
+#include "headers/TTLHeap.h"
 
 class Server {
 private:
     HTable htable;
     DLL dll;
-    const size_t k_max_msg = 32 << 20;
-    const size_t k_max_args = 200 * 1000;
-    const size_t k_tcp_idle_timeout = 5000;
+    TTLHeap entry_heap;
+    static const size_t k_max_msg = 32 << 20;
+    static const size_t k_max_args = 200 * 1000;
+    static const size_t k_tcp_idle_timeout = 5000;
+    static const uint64_t k_default_entry_timeout = 20000;
     int fd;
 private:
     void fd_set_nb(int connfd) {
@@ -93,8 +95,7 @@ private:
         return true;
     }
 
-    bool
-    read_str(const uint8_t *&cur, const uint8_t *end, size_t n, std::string &out) {
+    bool read_str(const uint8_t *&cur, const uint8_t *end, size_t n, std::string &out) {
         if (cur + n > end) {
             return false;
         }
@@ -162,7 +163,6 @@ private:
         Response resp;
         do_request(cmd, resp);
         make_response(resp, conn->wb);
-
         buf_consume(conn->rb, 4 + len);
         return true;
     }
@@ -247,10 +247,28 @@ private:
             return;
         }
         Entry* result_entry = get_entry(result);
+        entry_heap.expire_entry(result_entry->heap_idx);
         delete result_entry;
     }
 
-    void do_set(std::string& key, std::string& value, Response& out) {
+    void set_heap_entry_ttl(Entry* e, uint64_t ttl) {
+        uint64_t expire_time = get_monotonic_msec() + ttl;
+        if (ttl == (uint64_t)-1) {
+            entry_heap.expire_entry(e->heap_idx);
+            e->heap_idx = -1;
+            return;
+        }
+        if (e->heap_idx < entry_heap.heap_size()) {
+            entry_heap.set_expire_time(e->heap_idx, expire_time);
+        } else {
+            HeapEntry* new_entry = new HeapEntry();
+            new_entry->expire_time = expire_time;
+            new_entry->heap_idx_ref = &e->heap_idx;
+            entry_heap.add_heap_entry(*new_entry);
+        }
+    }
+
+    void do_set(std::string& key, std::string& value, Response& out, uint64_t ttl = k_default_entry_timeout) {
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key=key;
@@ -259,6 +277,7 @@ private:
         if (existing_node != nullptr) {
             Entry* existing_entry = get_entry(existing_node);
             existing_entry->value = value;
+            set_heap_entry_ttl(existing_entry, ttl);
             out.status = RES_OK;
         } else{
             Entry* new_entry = new Entry();
@@ -267,11 +286,28 @@ private:
             new_entry->key = key;
             new_entry->value = value;
             new_entry->node = *new_node;
+            new_entry->heap_idx = entry_heap.heap_size();
             htable.hm_insert(&new_entry->node);
+            set_heap_entry_ttl(new_entry, ttl);
             out.status = RES_OK;
         }
     }
 
+    void do_set_expire(std::string& key, uint64_t ttl, Response& out) {
+        uint64_t hash_code = fnv_hash((uint8_t*) key.data(), key.size());
+        Entry e;
+        e.node.hash_code = hash_code;
+        e.key = key;
+        HNode* existing_node =  htable.hm_lookup(&e.node, &eq);
+        if (existing_node == nullptr) {
+            out.status = RES_NX;
+            return;
+        }
+        Entry* existing_entry = get_entry(existing_node);
+        set_heap_entry_ttl(existing_entry, ttl);
+        out.status = RES_OK;
+    }
+    
     void do_request(std::vector<std::string> &cmd, Response &out) {
         msg("REACHED DO REQ");
         if (cmd.size() == 2 && cmd[0] == "get") {
@@ -284,26 +320,55 @@ private:
         } else if (cmd.size() == 2 && cmd[0] == "del") {
             std::string& key = cmd[1];
             do_delete(key, out);
-        } else {
+        } else if (cmd.size() == 3 && cmd[0] == "expire") {
+            std::string& key = cmd[1];
+            int64_t new_ttl= std::stoll(cmd[2]);
+            if (new_ttl <= 0) {
+                out.status = RES_ERR;
+                return;
+            }
+            do_set_expire(key, (uint64_t)new_ttl, out);
+        } else if (cmd.size() == 4 && cmd[0] == "set") {
+            std::string& key = cmd[1];
+            std::string& value = cmd[2];
+            int64_t ttl = std::stoll(cmd[3]);
+            if (ttl < 0) {
+                out.status = RES_ERR;
+                return;
+            }
+            do_set(key, value, out, ttl);
+        }
+        else {
             out.status = RES_ERR;
         }
     }
 
     int determine_timeout() {
         uint64_t curr_time = get_monotonic_msec();
-        Node* oldest_node = dll.tail->prev;
-        if (oldest_node == dll.head) {
+        uint64_t min_expire_time = (uint64_t)-1;
+        if (dll.tail->prev != dll.head) {
+            Node* node = dll.tail->prev;
+            Conn* e = get_connection(node);
+            uint64_t expiry_time = e->last_active_ms + k_tcp_idle_timeout;
+            min_expire_time = expiry_time; 
+        }
+        if (entry_heap.heap_size() > 0) {
+            HeapEntry& first_entry = entry_heap.top();
+            uint64_t expiry_time = first_entry.expire_time;
+            min_expire_time = std::min(min_expire_time, expiry_time);
+        }
+
+        if (min_expire_time == (uint64_t)-1) {
             return -1;
         }
-        Conn* connection = get_connection(oldest_node);
-        uint64_t earliest_timeout = connection->last_active_ms + k_tcp_idle_timeout;
-        if (curr_time >= earliest_timeout) {
-            return 0;
+        if (min_expire_time >= curr_time) {
+            return (int)(min_expire_time - curr_time);
         }
-        return (int)(earliest_timeout - curr_time);
+        return 0;
     }
 
     void handle_expired_connections(std::vector<Conn*>& fd2conn) {
+        // removes old tcp connections 
         uint64_t curr_time = get_monotonic_msec();
         Node* node = dll.tail->prev;
         while (node != dll.head) {
@@ -314,6 +379,18 @@ private:
             }
             conn_destroy(connection, fd2conn);
             node = prev_node;
+        }
+
+        // removes old entries from entry_heap
+        while (entry_heap.heap_size() > 0) {
+            HeapEntry& entry = entry_heap.top();
+            if (entry.expire_time > curr_time) {
+                break;
+            }
+            Entry* e = get_entry_from_heap_idx(entry.heap_idx_ref);
+            htable.hm_delete(&e->node, &eq);
+            entry_heap.expire_entry(e->heap_idx);
+            delete e;
         }
     }
 

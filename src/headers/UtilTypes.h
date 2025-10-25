@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include "HashTable.h"
@@ -28,8 +29,15 @@ struct Conn {
     Node node;
 };
 
+struct HeapEntry {
+    uint64_t expire_time = 0;
+    size_t* heap_idx_ref = 0;
+};
+
 struct Entry {
     HNode node;
+    size_t heap_idx;
     std::string key;
     std::string value;
 };
+
