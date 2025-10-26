@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -28,8 +29,8 @@ private:
     TTLHeap entry_heap;
     static const size_t k_max_msg = 32 << 20;
     static const size_t k_max_args = 200 * 1000;
-    static const size_t k_tcp_idle_timeout = 5000;
-    static const uint64_t k_default_entry_timeout = 20000;
+    static const int64_t k_tcp_idle_timeout = 5000;
+    static const int64_t k_default_entry_timeout = 20000;
     int fd;
 private:
     void fd_set_nb(int connfd) {
@@ -50,22 +51,47 @@ private:
     }
 
 
-    // append to the back
-    void buf_append(std::vector<uint8_t>& buf, const uint8_t *data, size_t len) {
-        buf.insert(buf.end(), data, data + len);
-    }
-
     void buf_append(Buffer& buffer, const uint8_t* data, size_t len) {
         buffer.buffer_append(data, (int) len);
     }
 
-    // remove from the front
-    void buf_consume(std::vector<uint8_t>& buf, size_t len) {
-        buf.erase(buf.begin(), buf.begin() + len);
-    }
-
     void buf_consume(Buffer& buffer, size_t len) {
         buffer.buffer_consume((int) len);
+    }
+
+    void write_1b_tag(Buffer& buffer, JSON tag) {
+        buffer.buffer_append((uint8_t*)&tag, 1);
+    }
+
+    void write_4b_len(Buffer& buffer, size_t size) {
+        buffer.buffer_append((uint8_t*)&size, 4);
+    }
+
+    void write_int64(Buffer& buffer, int64_t val) {
+        write_1b_tag(buffer, JSON::TAG_INT);
+        buffer.buffer_append((uint8_t*)&val, 8);
+    }
+
+    void write_string(Buffer& buffer, const uint8_t* data, size_t len) {
+        write_1b_tag(buffer, JSON::TAG_STR);
+        write_4b_len(buffer, len);
+        buffer.buffer_append(data, len);
+    }
+
+    void write_arr(Buffer& buffer, size_t len)  {
+        write_1b_tag(buffer, JSON::TAG_ARR);
+        write_4b_len(buffer, len);
+    }
+
+    void write_double(Buffer& buffer, double value) {
+        write_1b_tag(buffer, JSON::TAG_DBL);
+        buffer.buffer_append((uint8_t*)&value, 8);
+    }
+
+    void write_err(Buffer& buffer, const uint8_t* err_msg, size_t len) {
+        write_1b_tag(buffer, JSON::TAG_ERR);
+        write_4b_len(buffer, len);
+        buffer.buffer_append(err_msg, len);
     }
 
     // application callback when the listening socket is ready
@@ -89,7 +115,7 @@ private:
         Conn *conn = new Conn();
         conn->fd = connfd;
         conn->want_read = true;
-        uint64_t curr_time = get_monotonic_msec();
+        int64_t curr_time = get_monotonic_msec();
         conn->last_active_ms = curr_time;
         dll.insert(&conn->node);
         return conn;
@@ -259,9 +285,9 @@ private:
         delete result_entry;
     }
 
-    void set_heap_entry_ttl(Entry* e, uint64_t ttl) {
-        uint64_t expire_time = get_monotonic_msec() + ttl;
-        if (ttl == (uint64_t)-1) {
+    void set_heap_entry_ttl(Entry* e, int64_t ttl) {
+        int64_t expire_time = get_monotonic_msec() + ttl;
+        if (ttl == (int64_t)-1) {
             entry_heap.expire_entry(e->heap_idx);
             e->heap_idx = -1;
             return;
@@ -276,7 +302,7 @@ private:
         }
     }
 
-    void do_set(std::string& key, std::string& value, Response& out, uint64_t ttl = k_default_entry_timeout) {
+    void do_set(std::string& key, std::string& value, Response& out, int64_t ttl = k_default_entry_timeout) {
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key=key;
@@ -316,7 +342,7 @@ private:
         existing_entry -> heap_idx = -1;
     }
 
-    void do_set_expire(std::string& key, uint64_t ttl, Response& out) {
+    void do_set_expire(std::string& key, int64_t ttl, Response& out) {
         uint64_t hash_code = fnv_hash((uint8_t*) key.data(), key.size());
         Entry e;
         e.node.hash_code = hash_code;
@@ -349,7 +375,7 @@ private:
                 out.status = RES_ERR;
                 return;
             }
-            do_set_expire(key, (uint64_t)new_ttl, out);
+            do_set_expire(key, new_ttl, out);
         } else if (cmd.size() == 4 && cmd[0] == "set") {
             std::string& key = cmd[1];
             std::string& value = cmd[2];
@@ -368,21 +394,21 @@ private:
     }
 
     int determine_timeout() {
-        uint64_t curr_time = get_monotonic_msec();
-        uint64_t min_expire_time = (uint64_t)-1;
+        int64_t curr_time = get_monotonic_msec();
+        int64_t min_expire_time = (int64_t)-1;
         if (dll.tail->prev != dll.head) {
             Node* node = dll.tail->prev;
             Conn* e = get_connection(node);
-            uint64_t expiry_time = e->last_active_ms + k_tcp_idle_timeout;
+            int64_t expiry_time = e->last_active_ms + k_tcp_idle_timeout;
             min_expire_time = expiry_time; 
         }
         if (entry_heap.heap_size() > 0) {
             HeapEntry& first_entry = entry_heap.top();
-            uint64_t expiry_time = first_entry.expire_time;
+            int64_t expiry_time = first_entry.expire_time;
             min_expire_time = std::min(min_expire_time, expiry_time);
         }
 
-        if (min_expire_time == (uint64_t)-1) {
+        if (min_expire_time == (int64_t)-1) {
             return -1;
         }
         if (min_expire_time >= curr_time) {
@@ -393,12 +419,12 @@ private:
 
     void handle_expired_connections(std::vector<Conn*>& fd2conn) {
         // removes old tcp connections 
-        uint64_t curr_time = get_monotonic_msec();
+        int64_t curr_time = get_monotonic_msec();
         Node* node = dll.tail->prev;
         while (node != dll.head) {
             Conn* connection = get_connection(node);
             Node* prev_node = node->prev;
-            if (connection->last_active_ms + k_tcp_idle_timeout > curr_time) {
+            if ((int64_t)connection->last_active_ms + k_tcp_idle_timeout > curr_time) {
                 return;
             }
             conn_destroy(connection, fd2conn);
@@ -472,7 +498,7 @@ public:
                 }
                 poll_args.push_back(pfd);
             }
-            uint64_t timeout = determine_timeout();
+            int64_t timeout = determine_timeout();
             int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), timeout);
             if (rv < 0 && errno == EINTR) {
                 continue;

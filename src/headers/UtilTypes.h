@@ -12,6 +12,16 @@ enum {
     RES_NX = 2,     // key not found
 };
 
+
+enum JSON {
+    TAG_NIL = 0,    // nil
+    TAG_ERR = 1,    // error code + msg
+    TAG_STR = 2,    // string
+    TAG_INT = 3,    // int64
+    TAG_DBL = 4,    // double
+    TAG_ARR = 5,    // array
+};
+
 struct Response {
     uint32_t status = 0;
     std::vector<uint8_t> data;
@@ -29,7 +39,7 @@ struct Conn {
 };
 
 struct HeapEntry {
-    uint64_t expire_time = 0;
+    int64_t expire_time = 0;
     size_t* heap_idx_ref = 0;
 };
 
