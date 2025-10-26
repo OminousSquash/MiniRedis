@@ -300,6 +300,21 @@ private:
             out.status = RES_OK;
         }
     }
+    
+    void do_persist(std::string& key, Response& out) {
+        uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
+        Entry e;
+        e.key = key;
+        e.node.hash_code = hash_code;
+        HNode* existing_node = htable.hm_lookup(&e.node, &eq);
+        if (existing_node == nullptr) {
+            out.status = RES_NX;
+            return;
+        }
+        Entry* existing_entry = get_entry(existing_node);
+        entry_heap.expire_entry(existing_entry->heap_idx);
+        existing_entry -> heap_idx = -1;
+    }
 
     void do_set_expire(std::string& key, uint64_t ttl, Response& out) {
         uint64_t hash_code = fnv_hash((uint8_t*) key.data(), key.size());
@@ -344,8 +359,10 @@ private:
                 return;
             }
             do_set(key, value, out, ttl);
-        }
-        else {
+        } else if (cmd.size() == 2 && cmd[0] == "persist") {
+            std::string& key = cmd[1];
+            do_persist(key, out);
+        } else {
             out.status = RES_ERR;
         }
     }
