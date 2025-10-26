@@ -230,13 +230,11 @@ private:
     }
 
     void do_get(std::string& key, Response& out) {
-        msg("REACHED DO GET");
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key = key;
         e.node.hash_code = hash_code;
         HNode* result = htable.hm_lookup(&e.node, &eq);
-        msg("GOT RESULT NODE");
         if (result == nullptr) {
             out.status = RES_NX;
             return;
@@ -319,7 +317,6 @@ private:
     }
     
     void do_request(std::vector<std::string> &cmd, Response &out) {
-        msg("REACHED DO REQ");
         if (cmd.size() == 2 && cmd[0] == "get") {
             std::string& key = cmd[1];
             do_get(key, out);
@@ -405,7 +402,6 @@ private:
     }
 
     void conn_destroy(Conn* connection, std::vector<Conn*>& fd2conn) {
-        msg("CLOSING CLIENT");
         (void)close(connection->fd);
         fd2conn[connection->fd] = NULL;
         dll.remove(&connection->node);
@@ -413,7 +409,7 @@ private:
     }
 
 public:
-    Server() : htable(128) {}
+    Server() : htable(4) {}
 
     void run_server() {
         // the listening socket

@@ -63,6 +63,7 @@ void HTable::hm_insert(HNode* new_node) {
 }
 
 void HTable::h_resize() {
+    std::cout<< "RESIZE TRIGGERED" << std::endl;
     size_t old_cap = cap;
     HNode** old_table = htable;
 
@@ -71,11 +72,11 @@ void HTable::h_resize() {
     size = 0;
 
     htable = new HNode*[cap]();
-
+    std::cout << "NEW TABLE ALLOCATED" << std::endl;
     for (size_t i = 0; i < old_cap; i++) {
-        HNode* node = htable[i];
-        HNode* next_node = node->next;
+        HNode* node = old_table[i];
         while (node != nullptr) {
+            HNode* next_node = node->next;
             h_insert(node);
             node = next_node;
         }
