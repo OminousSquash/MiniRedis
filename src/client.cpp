@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <cstdint>
+#include <cstdio>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,8 +12,10 @@
 #include <netinet/ip.h>
 #include <string>
 #include <vector>
-#include <iostream>
+#include "headers/UtilTypes.h"
 
+
+const size_t k_max_msg = 32<<10;
 
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -49,69 +53,154 @@ static int32_t write_all(int fd, const char *buf, size_t n) {
     return 0;
 }
 
-const size_t k_max_msg = 32<<10;
 
 static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
-    uint32_t len = 4;
+    uint8_t wbuf[k_max_msg];
+    uint8_t *cur = wbuf;
+
+    *cur++ = (uint8_t)JSON::TAG_ARR;
+
+    uint32_t n = (uint32_t)cmd.size();
+    memcpy(cur, &n, 4);
+    cur += 4;
+
     for (const std::string &s : cmd) {
-        len += 4 + s.size();
+        *cur++ = (uint8_t)JSON::TAG_STR;
+        uint32_t len = (uint32_t)s.size();
+        memcpy(cur, &len, 4);
+        cur += 4;
+        memcpy(cur, s.data(), len);
+        cur += len;
     }
-    if (len > k_max_msg) {
+
+    size_t payload_len = (size_t)(cur - wbuf);
+    if (payload_len > k_max_msg) {
+        msg("send_req: too big");
         return -1;
     }
 
-    char wbuf[4 + k_max_msg];
-    memcpy(&wbuf[0], &len, 4);  // assume little endian
-    uint32_t n = cmd.size();
-    memcpy(&wbuf[4], &n, 4);
-    size_t cur = 8;
-    for (const std::string &s : cmd) {
-        uint32_t p = (uint32_t)s.size();
-        memcpy(&wbuf[cur], &p, 4);
-        memcpy(&wbuf[cur + 4], s.data(), s.size());
-        cur += 4 + s.size();
+    // Prepend total length (4 bytes) for TCP framing
+    char final_buf[4 + k_max_msg];
+    memcpy(final_buf, &payload_len, 4);
+    memcpy(final_buf + 4, wbuf, payload_len);
+
+    return write_all(fd, final_buf, 4 + payload_len);
+}
+
+static void decode_response(const uint8_t*& curr, const uint8_t* end) {
+    if (curr >= end) {
+        return;
     }
-    return write_all(fd, wbuf, 4 + len);
+    JSON tag;
+    memcpy(&tag, curr, 1);
+    curr++;
+    switch (tag) {
+        case JSON::TAG_ARR: {
+            if (curr + 4 > end) {
+                msg("decode: bad str len");
+                return;
+            }
+            uint32_t arr_len;
+            memcpy(&arr_len, curr, 4);
+            curr += 4;
+            std::cout << "[array len=" << arr_len << "]" << std::endl;
+            for (uint32_t i = 0; i < arr_len; i++) {
+                decode_response(curr, end);
+            }
+            break;
+        }
+
+        case JSON::TAG_ERR: {
+            if (curr + 4 > end) {
+                msg("decode: bad str len");
+                return;
+            }
+            uint32_t err_msg_len;
+            memcpy(&err_msg_len, curr, 4);
+            curr += 4;
+            if (curr + err_msg_len > end) {
+                msg("decode: bad str data");
+                return;
+            }
+            std::cout << "(str) " << std::string((const char*)curr, err_msg_len) << "\n";
+            curr += err_msg_len;
+            break;
+        }
+
+        case JSON::TAG_INT: {
+            if (curr + 8 > end) {
+                msg("decode: bad str len");
+                return;
+            }
+            int64_t val;
+            memcpy(&val, curr, 8);
+            std::cout << "(int) " << val << std::endl;
+            curr += 8;
+            break;
+        }
+
+        case JSON::TAG_NIL: {
+            std::cout << "(nil)" << std::endl;
+            break;
+        }
+
+        case JSON::TAG_STR: {
+            if (curr + 4 > end) {
+                msg("decode: bad str len");
+                return;
+            }
+            uint32_t str_len;
+            memcpy(&str_len, curr, 4);
+            curr += 4;
+            if (curr + str_len > end) {
+                msg("decode: bad str data");
+                return;
+            }
+            std::cout << "(str) " << std::string((const char*)curr, str_len) << "\n";
+            curr += str_len;
+            break;
+        }
+        default: {
+            std::cout << "unknown tag" << std::endl;
+            break;
+        }
+    }
 }
 
 static int32_t read_res(int fd) {
-    // 4 bytes header
-    char rbuf[4 + k_max_msg];
-    errno = 0;
-    int32_t err = read_full(fd, rbuf, 4);
-    if (err) {
-        if (errno == 0) {
-            msg("EOF");
-        } else {
-            msg("read() error");
-        }
-        return err;
+    char rbuf[k_max_msg];
+
+    // Read 4-byte length prefix (TCP framing)
+    if (read_full(fd, rbuf, 4)) {
+        msg("read_res: failed to read length");
+        return -1;
     }
 
     uint32_t len = 0;
-    memcpy(&len, rbuf, 4);  // assume little endian
+    memcpy(&len, rbuf, 4);
     if (len > k_max_msg) {
-        msg("too long");
+        msg("read_res: too long");
         return -1;
     }
 
-    // reply body
-    err = read_full(fd, &rbuf[4], len);
-    if (err) {
-        msg("read() error");
-        return err;
-    }
-
-    // print the result
-    uint32_t rescode = 0;
-    if (len < 4) {
-        msg("bad response");
+    // Read full payload
+    if (read_full(fd, &rbuf[4], len)) {
+        msg("read_res: failed to read payload");
         return -1;
     }
-    memcpy(&rescode, &rbuf[4], 4);
-    printf("server says: [%u] %.*s\n", rescode, len - 4, &rbuf[8]);
+
+    const uint8_t *cur = (uint8_t*)&rbuf[4];
+    const uint8_t *end = cur + len;
+
+    std::cout << "Server response:\n";
+    decode_response(cur, end);
+
+    if (cur != end)
+        msg("read_res: trailing bytes after decode");
+
     return 0;
 }
+
 
 int main(int argc, char **argv) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);

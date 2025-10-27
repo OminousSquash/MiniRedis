@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/_types/_u_int32_t.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -21,6 +23,10 @@
 #include "headers/UtilFuncs.h"
 #include "headers/DLL.h"
 #include "headers/TTLHeap.h"
+
+static const std::string KEY_NOT_FOUND_ERROR = "key not found";
+static const std::string NULL_MESSAGE = "null";
+static const std::string INVALID_TTL = "ttl cannot be negative";
 
 class Server {
 private:
@@ -94,6 +100,15 @@ private:
         buffer.buffer_append(err_msg, len);
     }
 
+    void write_err(Buffer& buffer) {
+        write_1b_tag(buffer, JSON::TAG_ERR);
+        write_4b_len(buffer, 0);
+    }
+
+    void write_success(Buffer& buffer) {
+        write_1b_tag(buffer, JSON::TAG_NIL);
+    }
+
     // application callback when the listening socket is ready
     Conn *handle_accept() {
         // accept
@@ -139,38 +154,55 @@ private:
         return true;
     }
 
-    int32_t
-    parse_req(const uint8_t *data, size_t size, std::vector<std::string> &out) {
-        const uint8_t *end = data + size;
-        uint32_t nstr = 0;
-        if (!read_u32(data, end, nstr)) {
+    int32_t parse_req(const uint8_t *data, size_t size, std::vector<std::string> &out) {
+        const uint8_t* start = data;
+        const uint8_t* end = start + size;
+        if (start >= end) {
             return -1;
         }
-        if (nstr > k_max_args) {
-            return -1;  // safety limit
+        JSON tag;
+        memcpy(&tag, data, 1);
+        start++;
+        if (tag != JSON::TAG_ARR) {
+            msg("Expected ARR");
+            return -1;
         }
-
-        while (out.size() < nstr) {
-            uint32_t len = 0;
-            if (!read_u32(data, end, len)) {
+        uint32_t arr_len;
+        memcpy(&arr_len, start, 4);
+        start += 4;
+        if (arr_len > k_max_args) {
+            msg("too many args");
+            return -1;
+        }
+        for (uint32_t i = 0; i < arr_len; i++) {
+            if (start >= end) {
                 return -1;
             }
-            out.push_back(std::string());
-            if (!read_str(data, end, len, out.back())) {
+            memcpy(&tag, start, 1);
+            start++;
+            if (tag != JSON::TAG_STR) {
+                msg("Expected String");
                 return -1;
             }
+            if (start + 4 > end) {
+                msg("parse_req: unexpected end of data");
+                return -1;
+            }
+            uint32_t str_len;
+            memcpy(&str_len, start, 4);
+            start += 4;
+            if (start + str_len > end) {
+                msg("parse_req: unexpected end of data");
+                return -1;
+            }
+            out.emplace_back(reinterpret_cast<const char*>(start), str_len);
+            start += str_len;
         }
-        if (data != end) {
-            return -1;  // trailing garbage
+        if (start != end) {
+            msg("parse_req: trailing garbage");
+            return -1;
         }
         return 0;
-    }
-
-    void make_response(const Response &resp, Buffer& out) {
-        uint32_t resp_len = 4 + (uint32_t)resp.data.size();
-        buf_append(out, (const uint8_t *)&resp_len, 4);
-        buf_append(out, (const uint8_t *)&resp.status, 4);
-        buf_append(out, resp.data.data(), resp.data.size());
     }
 
     bool try_one_request(Conn *conn) {
@@ -196,11 +228,17 @@ private:
             conn->want_close = true;
             return false;   // want close
         }
-        Response resp;
-        do_request(cmd, resp);
-        make_response(resp, conn->write_buffer);
+        Buffer temp_buffer;
+        do_request(cmd, temp_buffer);
+        send_frame(temp_buffer, conn->write_buffer);
         buf_consume(conn->read_buffer, 4 + len);
         return true;
+    }
+
+    void send_frame(Buffer& temp_buffer, Buffer& write_buffer) {
+        uint32_t data_len = (uint32_t)temp_buffer.size();
+        write_buffer.buffer_append((uint8_t*)&data_len, 4);
+        write_buffer.buffer_append(temp_buffer.data_begin, data_len);
     }
 
     void handle_write(Conn *conn) {
@@ -255,34 +293,39 @@ private:
         } 
     }
 
-    void do_get(std::string& key, Response& out) {
-        uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
-        Entry e;
-        e.key = key;
-        e.node.hash_code = hash_code;
-        HNode* result = htable.hm_lookup(&e.node, &eq);
-        if (result == nullptr) {
-            out.status = RES_NX;
-            return;
+    void do_get_multi(std::vector<std::string>& keys, Buffer& write_buffer) {
+        write_arr(write_buffer, keys.size());
+        for (std::string& key: keys)  {
+            std::cout << "GETTING KEY: " << key << std::endl;
+            uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
+            Entry e;
+            e.key = key;
+            e.node.hash_code = hash_code;
+            HNode* result = htable.hm_lookup(&e.node, &eq);
+            if (result == nullptr) {
+                write_err(write_buffer, (uint8_t*)NULL_MESSAGE.data(), NULL_MESSAGE.size());
+                continue;
+            }
+            Entry* entry = get_entry(result);
+            std::string& value = entry->value;
+            write_string(write_buffer, (uint8_t*)value.data(), value.size());
         }
-        Entry* entry = get_entry(result);
-        out.status = RES_OK;
-        out.data.assign(entry->value.begin(), entry->value.end());
     }
 
-    void do_delete(std::string& key, Response& out) {
+    void do_delete(std::string& key, Buffer& buffer) {
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key = key;
         e.node.hash_code = hash_code;
         HNode* result = htable.hm_delete(&e.node, &eq);
         if (result == nullptr) {
-            out.status = RES_NX;
+            write_err(buffer, (uint8_t*)KEY_NOT_FOUND_ERROR.data(), KEY_NOT_FOUND_ERROR.size());
             return;
         }
         Entry* result_entry = get_entry(result);
         entry_heap.expire_entry(result_entry->heap_idx);
         delete result_entry;
+        write_success(buffer);
     }
 
     void set_heap_entry_ttl(Entry* e, int64_t ttl) {
@@ -302,7 +345,7 @@ private:
         }
     }
 
-    void do_set(std::string& key, std::string& value, Response& out, int64_t ttl = k_default_entry_timeout) {
+    void do_set(std::string& key, std::string& value, Buffer& out, int64_t ttl = k_default_entry_timeout) {
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key=key;
@@ -312,7 +355,7 @@ private:
             Entry* existing_entry = get_entry(existing_node);
             existing_entry->value = value;
             set_heap_entry_ttl(existing_entry, ttl);
-            out.status = RES_OK;
+            write_success(out);
         } else{
             Entry* new_entry = new Entry();
             HNode* new_node = new HNode();
@@ -323,44 +366,48 @@ private:
             new_entry->heap_idx = entry_heap.heap_size();
             htable.hm_insert(&new_entry->node);
             set_heap_entry_ttl(new_entry, ttl);
-            out.status = RES_OK;
+            write_success(out);
         }
     }
     
-    void do_persist(std::string& key, Response& out) {
+    void do_persist(std::string& key, Buffer& out) {
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key = key;
         e.node.hash_code = hash_code;
         HNode* existing_node = htable.hm_lookup(&e.node, &eq);
         if (existing_node == nullptr) {
-            out.status = RES_NX;
+            write_err(out, (uint8_t*)KEY_NOT_FOUND_ERROR.data(), KEY_NOT_FOUND_ERROR.size());
             return;
         }
         Entry* existing_entry = get_entry(existing_node);
         entry_heap.expire_entry(existing_entry->heap_idx);
         existing_entry -> heap_idx = -1;
+        write_success(out);
     }
 
-    void do_set_expire(std::string& key, int64_t ttl, Response& out) {
+    void do_set_expire(std::string& key, int64_t ttl, Buffer& out) {
         uint64_t hash_code = fnv_hash((uint8_t*) key.data(), key.size());
         Entry e;
         e.node.hash_code = hash_code;
         e.key = key;
         HNode* existing_node =  htable.hm_lookup(&e.node, &eq);
         if (existing_node == nullptr) {
-            out.status = RES_NX;
+            write_err(out, (uint8_t*)KEY_NOT_FOUND_ERROR.data(), KEY_NOT_FOUND_ERROR.size());
             return;
         }
         Entry* existing_entry = get_entry(existing_node);
         set_heap_entry_ttl(existing_entry, ttl);
-        out.status = RES_OK;
+        write_success(out);
     }
     
-    void do_request(std::vector<std::string> &cmd, Response &out) {
-        if (cmd.size() == 2 && cmd[0] == "get") {
-            std::string& key = cmd[1];
-            do_get(key, out);
+    void do_request(std::vector<std::string> &cmd, Buffer& out) {
+        if (cmd.size() >= 2  && cmd[0] == "get") {
+            std::vector<std::string> keys;
+            for (size_t i = 1; i < cmd.size(); i++) {
+                keys.push_back(cmd[i]);
+            }
+            do_get_multi(keys, out);
         } else if (cmd.size() == 3 && cmd[0] == "set") {
             std::string& key = cmd[1];
             std::string& value = cmd[2];
@@ -372,7 +419,7 @@ private:
             std::string& key = cmd[1];
             int64_t new_ttl= std::stoll(cmd[2]);
             if (new_ttl <= 0) {
-                out.status = RES_ERR;
+                write_err(out, (uint8_t*)INVALID_TTL.data(), INVALID_TTL.size());
                 return;
             }
             do_set_expire(key, new_ttl, out);
@@ -380,8 +427,8 @@ private:
             std::string& key = cmd[1];
             std::string& value = cmd[2];
             int64_t ttl = std::stoll(cmd[3]);
-            if (ttl < 0) {
-                out.status = RES_ERR;
+            if (ttl <= 0) {
+                write_err(out, (uint8_t*)INVALID_TTL.data(), INVALID_TTL.size());
                 return;
             }
             do_set(key, value, out, ttl);
@@ -389,7 +436,7 @@ private:
             std::string& key = cmd[1];
             do_persist(key, out);
         } else {
-            out.status = RES_ERR;
+            write_err(out);
         }
     }
 
@@ -465,8 +512,8 @@ public:
 
         struct sockaddr_in addr = {};
         addr.sin_family = AF_INET;
-        addr.sin_port = ntohs(1234);
-        addr.sin_addr.s_addr = ntohl(0);    // wildcard address 0.0.0.0
+        addr.sin_port = htons(1234);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
         int rv = bind(fd, (const sockaddr *)&addr, sizeof(addr));
         if (rv) {
             die("bind()");
