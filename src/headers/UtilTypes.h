@@ -39,7 +39,7 @@ struct Conn {
 };
 
 struct HeapEntry {
-    int64_t expire_time = 0;
+    uint64_t expire_time = 0;
     size_t* heap_idx_ref = 0;
 };
 

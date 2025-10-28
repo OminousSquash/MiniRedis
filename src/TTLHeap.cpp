@@ -1,4 +1,5 @@
 #include "headers/TTLHeap.h"
+#include <utility>
 
 void TTLHeap::update_entry_idx(HeapEntry* heap_entry, size_t new_pos) {
     *(heap_entry->heap_idx_ref) = new_pos;
@@ -10,8 +11,9 @@ void TTLHeap::heap_up(size_t pos) {
         HeapEntry& curr = heap[pos];
         HeapEntry& parent = heap[parent_idx];
         if (curr.expire_time < parent.expire_time) {
-            update_entry_idx(&curr, parent_idx);
-            update_entry_idx(&parent, pos);
+            std::swap(heap[pos], heap[parent_idx]);
+            update_entry_idx(&heap[pos], pos);
+            update_entry_idx(&heap[parent_idx], parent_idx);
             pos = parent_idx;
         } else {
             break;
@@ -36,7 +38,7 @@ void TTLHeap::heap_down(size_t pos) {
             break;
         }
         std::swap(curr, heap[smallest_idx]);
-        update_entry_idx(&curr, pos);
+        update_entry_idx(&heap[pos], pos);
         update_entry_idx(&heap[smallest_idx], smallest_idx);
         pos = smallest_idx;
     }
@@ -88,12 +90,12 @@ void TTLHeap::expire_entry(size_t pos) {
     if (pos < 0 || pos >= heap.size()) {
         return;
     }
-    heap[pos].expire_time = -1;
+    heap[pos].expire_time = 0;
     heap_up(pos);
     heap_delete();
 }
 
 void TTLHeap::add_heap_entry(const HeapEntry& heap_entry) {
     heap.push_back(heap_entry);
-    heap_update(heap.size() - 1);
+    heap_up(heap.size() - 1);
 }

@@ -27,6 +27,7 @@
 static const std::string KEY_NOT_FOUND_ERROR = "key not found";
 static const std::string NULL_MESSAGE = "null";
 static const std::string INVALID_TTL = "ttl cannot be negative";
+static const std::string EXPIRE_PERSISTENT_NODE_ERR = "cannot expire persistent entry";
 
 class Server {
 private:
@@ -35,8 +36,8 @@ private:
     TTLHeap entry_heap;
     static const size_t k_max_msg = 32 << 20;
     static const size_t k_max_args = 200 * 1000;
-    static const int64_t k_tcp_idle_timeout = 5000;
-    static const int64_t k_default_entry_timeout = 20000;
+    static const uint64_t k_tcp_idle_timeout = 5000;
+    static const uint64_t k_default_entry_timeout = 25000;
     int fd;
 private:
     void fd_set_nb(int connfd) {
@@ -130,7 +131,7 @@ private:
         Conn *conn = new Conn();
         conn->fd = connfd;
         conn->want_read = true;
-        int64_t curr_time = get_monotonic_msec();
+        uint64_t curr_time = get_monotonic_msec();
         conn->last_active_ms = curr_time;
         dll.insert(&conn->node);
         return conn;
@@ -328,9 +329,9 @@ private:
         write_success(buffer);
     }
 
-    void set_heap_entry_ttl(Entry* e, int64_t ttl) {
-        int64_t expire_time = get_monotonic_msec() + ttl;
-        if (ttl == (int64_t)-1) {
+    void set_heap_entry_ttl(Entry* e, uint64_t ttl) {
+        uint64_t expire_time = get_monotonic_msec() + ttl;
+        if (ttl == (uint64_t)0) {
             entry_heap.expire_entry(e->heap_idx);
             e->heap_idx = -1;
             return;
@@ -345,7 +346,7 @@ private:
         }
     }
 
-    void do_set(std::string& key, std::string& value, Buffer& out, int64_t ttl = k_default_entry_timeout) {
+    void do_set(std::string& key, std::string& value, Buffer& out, uint64_t ttl = k_default_entry_timeout) {
         uint64_t hash_code = fnv_hash((uint8_t*)key.data(), key.size());
         Entry e;
         e.key=key;
@@ -386,7 +387,7 @@ private:
         write_success(out);
     }
 
-    void do_set_expire(std::string& key, int64_t ttl, Buffer& out) {
+    void do_set_expire(std::string& key, uint64_t ttl, Buffer& out) {
         uint64_t hash_code = fnv_hash((uint8_t*) key.data(), key.size());
         Entry e;
         e.node.hash_code = hash_code;
@@ -397,6 +398,10 @@ private:
             return;
         }
         Entry* existing_entry = get_entry(existing_node);
+        if (existing_entry->heap_idx == (size_t)-1) {
+            write_err(out, (uint8_t*)EXPIRE_PERSISTENT_NODE_ERR.data(), EXPIRE_PERSISTENT_NODE_ERR.size());
+            return;
+        }
         set_heap_entry_ttl(existing_entry, ttl);
         write_success(out);
     }
@@ -422,7 +427,7 @@ private:
                 write_err(out, (uint8_t*)INVALID_TTL.data(), INVALID_TTL.size());
                 return;
             }
-            do_set_expire(key, new_ttl, out);
+            do_set_expire(key, (uint64_t)new_ttl, out);
         } else if (cmd.size() == 4 && cmd[0] == "set") {
             std::string& key = cmd[1];
             std::string& value = cmd[2];
@@ -441,21 +446,21 @@ private:
     }
 
     int determine_timeout() {
-        int64_t curr_time = get_monotonic_msec();
-        int64_t min_expire_time = (int64_t)-1;
+        uint64_t curr_time = get_monotonic_msec();
+        uint64_t min_expire_time = (uint64_t)-1;
         if (dll.tail->prev != dll.head) {
             Node* node = dll.tail->prev;
             Conn* e = get_connection(node);
-            int64_t expiry_time = e->last_active_ms + k_tcp_idle_timeout;
+            uint64_t expiry_time = e->last_active_ms + k_tcp_idle_timeout;
             min_expire_time = expiry_time; 
         }
         if (entry_heap.heap_size() > 0) {
             HeapEntry& first_entry = entry_heap.top();
-            int64_t expiry_time = first_entry.expire_time;
+            uint64_t expiry_time = first_entry.expire_time;
             min_expire_time = std::min(min_expire_time, expiry_time);
         }
 
-        if (min_expire_time == (int64_t)-1) {
+        if (min_expire_time == (uint64_t)-1) {
             return -1;
         }
         if (min_expire_time >= curr_time) {
@@ -466,12 +471,12 @@ private:
 
     void handle_expired_connections(std::vector<Conn*>& fd2conn) {
         // removes old tcp connections 
-        int64_t curr_time = get_monotonic_msec();
+        uint64_t curr_time = get_monotonic_msec();
         Node* node = dll.tail->prev;
         while (node != dll.head) {
             Conn* connection = get_connection(node);
             Node* prev_node = node->prev;
-            if ((int64_t)connection->last_active_ms + k_tcp_idle_timeout > curr_time) {
+            if (connection->last_active_ms + k_tcp_idle_timeout > curr_time) {
                 return;
             }
             conn_destroy(connection, fd2conn);
@@ -545,7 +550,7 @@ public:
                 }
                 poll_args.push_back(pfd);
             }
-            int64_t timeout = determine_timeout();
+            uint64_t timeout = determine_timeout();
             int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), timeout);
             if (rv < 0 && errno == EINTR) {
                 continue;
