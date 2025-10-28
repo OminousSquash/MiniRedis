@@ -23,40 +23,42 @@ Make sure you have **g++** (C++11 or later) installed.
 ```bash
 git clone https://github.com/OminousSquash/MiniRedis.git
 cd MiniRedis/src
-
-2. Compile the Server
-
+```
+### 2. Compile the Server
+```bash
 g++ -std=c++11 -Wall -Wextra -O2 -g Buffer.cpp HashTable.cpp server.cpp DLL.cpp TTLHeap.cpp UtilFuncs.cpp -o server
+```
 
-
-3. Compile the Client
-
+### 3. Compile the Client
+```bash
 g++ -std=c++11 -Wall -Wextra -O2 -g client.cpp -o client
+```
+---
 
+## USAGE
 
-USAGE
-
-1. Start the Server
-
+### 1. Start the Server
+```bash
 ./server
-
-2. Use the client
-
+```
+### 2. Use the client
+```bash
 ./client get <key1> <key2> ... <keyn> 
 ./client set <key> <value> <ttl>(optional)
 ./client del <key>
 ./client expire <key> <tll>
 ./client persist <key>
-
+```
 Example 
-
+```
 ./client set foo bar 10
 ./client get foo
 ./client expire foo 20
 ./client persist foo
 ./client del foo 
-
-🧠 Architecture Overview
+```
+---
+## 🧠 Architecture Overview
 
 - server.cpp — Handles incoming client connections and executes commands.
 
@@ -72,8 +74,8 @@ Example
 
 - UtilFuncs.cpp — Helper utilities for parsing and time management.
 
-
-🧩 Future Improvements
+---
+## 🧩 Future Improvements
 
 Add support for more Redis-like commands (incr, keys, flushdb, etc.)
 
