@@ -35,7 +35,7 @@ g++ -std=c++11 -Wall -Wextra -O2 -g client.cpp -o client
 ```
 ---
 
-## USAGE
+## 🛠️ Usage
 
 ### 1. Start the Server
 ```bash
