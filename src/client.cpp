@@ -1,3 +1,4 @@
+#include "headers/UtilTypes.h"
 #include <assert.h>
 #include <cstdint>
 #include <cstdio>
@@ -12,7 +13,6 @@
 #include <netinet/ip.h>
 #include <string>
 #include <vector>
-#include "headers/UtilTypes.h"
 
 
 const size_t k_max_msg = 32<<10;
@@ -53,49 +53,67 @@ static int32_t write_all(int fd, const char *buf, size_t n) {
     return 0;
 }
 
+static bool is_json(const std::string& s) {
+    if (s[0] != '{') {
+        return false;
+    }
+    int depth = 1;
+    for (size_t i = 1; i < s.size(); i++) {
+        if (s[i] == '{') {
+            depth++;
+        } else if (s[i] == '}') {
+            depth--;
+        }
+    }
+    return depth==0;
+}
 
 static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
-    uint8_t wbuf[k_max_msg];
-    uint8_t *cur = wbuf;
+    char k_buffer[k_max_msg] = {};
+    ValueType arr_type = ValueType::ARR;
+    ValueType content_type = ValueType::STR;
+    size_t arr_len = cmd.size();
 
-    *cur++ = (uint8_t)JSON::TAG_ARR;
-
-    uint32_t n = (uint32_t)cmd.size();
-    memcpy(cur, &n, 4);
-    cur += 4;
-
-    for (const std::string &s : cmd) {
-        *cur++ = (uint8_t)JSON::TAG_STR;
-        uint32_t len = (uint32_t)s.size();
-        memcpy(cur, &len, 4);
-        cur += 4;
-        memcpy(cur, s.data(), len);
-        cur += len;
+    // Be careful: ensure cmd has enough arguments before reading cmd[3]
+    if (cmd.size() >= 3 && cmd[0] == "set" && is_json(cmd[2])) {
+        content_type = ValueType::JSON;
     }
 
-    size_t payload_len = (size_t)(cur - wbuf);
-    if (payload_len > k_max_msg) {
-        msg("send_req: too big");
-        return -1;
+    memcpy(k_buffer, &arr_type, 1);
+    memcpy(&k_buffer[1], &arr_len, 4);
+
+    char* curr = &k_buffer[5];
+
+    for (size_t i = 0; i < cmd.size(); i++) {
+        // last element = value → may be JSON
+        *curr++ = (i == cmd.size() - 1 ? content_type : ValueType::STR);
+
+        uint32_t str_len = cmd[i].size();
+        memcpy(curr, &str_len, 4);
+        curr += 4;
+
+        memcpy(curr, cmd[i].data(), str_len);
+        curr += str_len;
     }
 
-    // Prepend total length (4 bytes) for TCP framing
-    char final_buf[4 + k_max_msg];
-    memcpy(final_buf, &payload_len, 4);
-    memcpy(final_buf + 4, wbuf, payload_len);
+    size_t total_size = (size_t)(curr - &k_buffer[0]);
 
-    return write_all(fd, final_buf, 4 + payload_len);
+    // write the final frame: [length][payload]
+    write_all(fd, (char*)&total_size, 4);
+    write_all(fd, k_buffer, total_size);
+
+    return 0;
 }
 
 static void decode_response(const uint8_t*& curr, const uint8_t* end) {
     if (curr >= end) {
         return;
     }
-    JSON tag;
+    ValueType tag;
     memcpy(&tag, curr, 1);
     curr++;
     switch (tag) {
-        case JSON::TAG_ARR: {
+        case ValueType::ARR: {
             if (curr + 4 > end) {
                 msg("decode: bad str len");
                 return;
@@ -110,7 +128,7 @@ static void decode_response(const uint8_t*& curr, const uint8_t* end) {
             break;
         }
 
-        case JSON::TAG_ERR: {
+        case ValueType::ERR: {
             if (curr + 4 > end) {
                 msg("decode: bad str len");
                 return;
@@ -127,7 +145,7 @@ static void decode_response(const uint8_t*& curr, const uint8_t* end) {
             break;
         }
 
-        case JSON::TAG_INT: {
+        case ValueType::INT: {
             if (curr + 8 > end) {
                 msg("decode: bad str len");
                 return;
@@ -139,12 +157,12 @@ static void decode_response(const uint8_t*& curr, const uint8_t* end) {
             break;
         }
 
-        case JSON::TAG_NIL: {
-            std::cout << "(nil)" << std::endl;
+        case ValueType::OK: {
+            std::cout << "(ok)" << std::endl;
             break;
         }
 
-        case JSON::TAG_STR: {
+        case ValueType::STR: {
             if (curr + 4 > end) {
                 msg("decode: bad str len");
                 return;

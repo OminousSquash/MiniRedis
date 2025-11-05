@@ -1,16 +1,15 @@
+#include <nlohmann/json.hpp>
 #include <assert.h>
 #include <cstddef>
-#include <cstdint>
-#include <cstring>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sstream>
 #include <poll.h>
 #include <sys/_types/_u_int32_t.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -28,6 +27,8 @@ static const std::string KEY_NOT_FOUND_ERROR = "key not found";
 static const std::string NULL_MESSAGE = "null";
 static const std::string INVALID_TTL = "ttl cannot be negative";
 static const std::string EXPIRE_PERSISTENT_NODE_ERR = "cannot expire persistent entry";
+
+using json = nlohmann::json;
 
 class Server {
 private:
@@ -66,7 +67,7 @@ private:
         buffer.buffer_consume((int) len);
     }
 
-    void write_1b_tag(Buffer& buffer, JSON tag) {
+    void write_1b_tag(Buffer& buffer, ValueType tag) {
         buffer.buffer_append((uint8_t*)&tag, 1);
     }
 
@@ -75,39 +76,39 @@ private:
     }
 
     void write_int64(Buffer& buffer, int64_t val) {
-        write_1b_tag(buffer, JSON::TAG_INT);
+        write_1b_tag(buffer, ValueType::INT);
         buffer.buffer_append((uint8_t*)&val, 8);
     }
 
     void write_string(Buffer& buffer, const uint8_t* data, size_t len) {
-        write_1b_tag(buffer, JSON::TAG_STR);
+        write_1b_tag(buffer, ValueType::STR);
         write_4b_len(buffer, len);
         buffer.buffer_append(data, len);
     }
 
     void write_arr(Buffer& buffer, size_t len)  {
-        write_1b_tag(buffer, JSON::TAG_ARR);
+        write_1b_tag(buffer, ValueType::ARR);
         write_4b_len(buffer, len);
     }
 
     void write_double(Buffer& buffer, double value) {
-        write_1b_tag(buffer, JSON::TAG_DBL);
+        write_1b_tag(buffer, ValueType::DOUBLE);
         buffer.buffer_append((uint8_t*)&value, 8);
     }
 
     void write_err(Buffer& buffer, const uint8_t* err_msg, size_t len) {
-        write_1b_tag(buffer, JSON::TAG_ERR);
+        write_1b_tag(buffer, ValueType::ERR);
         write_4b_len(buffer, len);
         buffer.buffer_append(err_msg, len);
     }
 
     void write_err(Buffer& buffer) {
-        write_1b_tag(buffer, JSON::TAG_ERR);
+        write_1b_tag(buffer, ValueType::ERR);
         write_4b_len(buffer, 0);
     }
 
     void write_success(Buffer& buffer) {
-        write_1b_tag(buffer, JSON::TAG_NIL);
+        write_1b_tag(buffer, ValueType::OK);
     }
 
     // application callback when the listening socket is ready
@@ -161,47 +162,53 @@ private:
         if (start >= end) {
             return -1;
         }
-        JSON tag;
-        memcpy(&tag, data, 1);
-        start++;
-        if (tag != JSON::TAG_ARR) {
+        ValueType header_type;
+        memcpy(&header_type, data, 1);
+        if (header_type != ARR) {
             msg("Expected ARR");
             return -1;
         }
+        start++;
         uint32_t arr_len;
         memcpy(&arr_len, start, 4);
         start += 4;
         if (arr_len > k_max_args) {
-            msg("too many args");
+            msg("Too many entries");
             return -1;
         }
-        for (uint32_t i = 0; i < arr_len; i++) {
-            if (start >= end) {
-                return -1;
-            }
+        std::cout << "num elements: " << arr_len << std::endl;
+        for (size_t i = 0; i < arr_len; i++) {
+
+            if (start >= end) return -1;
+
+            ValueType tag;
             memcpy(&tag, start, 1);
             start++;
-            if (tag != JSON::TAG_STR) {
-                msg("Expected String");
+
+            // Accept STR or JSON
+            if (tag != STR && tag != JSON) {
+                msg("unexpected type");
                 return -1;
             }
+
+            // Make sure we can read string length
             if (start + 4 > end) {
-                msg("parse_req: unexpected end of data");
+                msg("unexpected end");
                 return -1;
             }
+
             uint32_t str_len;
             memcpy(&str_len, start, 4);
             start += 4;
+
+            // Make sure we can read the string data
             if (start + str_len > end) {
-                msg("parse_req: unexpected end of data");
+                msg("unexpected end");
                 return -1;
             }
+
             out.emplace_back(reinterpret_cast<const char*>(start), str_len);
             start += str_len;
-        }
-        if (start != end) {
-            msg("parse_req: trailing garbage");
-            return -1;
         }
         return 0;
     }
@@ -308,8 +315,65 @@ private:
                 continue;
             }
             Entry* entry = get_entry(result);
-            std::string& value = entry->value;
+            std::string value = entry->value;
             write_string(write_buffer, (uint8_t*)value.data(), value.size());
+        }
+    }
+
+    std::vector<std::string> parse_key_request(const std::string& key) {
+        std::vector<std::string> parts;
+        std::stringstream ss(key);
+        std::string token;
+        while (std::getline(ss, token, '.')) {
+            parts.push_back(token);
+        }
+        return parts;
+    }
+
+    void do_get_multi_json(std::vector<std::string>& keys, Buffer& write_buffer) {
+        write_arr(write_buffer, keys.size());
+        for (std::string& key: keys) {
+            std::vector<std::string> key_parts = parse_key_request(key);
+            if (key_parts.empty()) {
+                write_err(write_buffer, (uint8_t*)NULL_MESSAGE.data(), NULL_MESSAGE.size());
+                continue;
+            }
+            std::string& root = key_parts[0];
+            uint64_t hash_code = fnv_hash((uint8_t*)root.data(), root.size());
+            Entry e;
+            e.key = root;
+            e.node.hash_code = hash_code;
+            HNode* result = htable.hm_lookup(&e.node, &eq);
+            if (result == nullptr) {
+                write_err(write_buffer, (uint8_t*)NULL_MESSAGE.data(), NULL_MESSAGE.size());
+                continue;
+            }
+            Entry* entry = get_entry(result);
+            std::string& value = entry->value;
+            json j;
+            try {
+                j = json::parse(value);
+            } catch (std::exception& e) {
+                write_err(write_buffer, (uint8_t*)NULL_MESSAGE.data(), NULL_MESSAGE.size());
+                continue;
+            }
+            for (int i = 1; i < key_parts.size(); i++) {
+                if (!j.contains(key_parts[i])) {
+                    write_err(write_buffer, (uint8_t*)NULL_MESSAGE.data(), NULL_MESSAGE.size());
+                    goto next;
+                }
+                j = j[key_parts[i]];
+            }
+            {
+                std::string response;
+                if (j.is_primitive()) {
+                    response = j.dump() ;
+                } else {
+                    response = j.dump(4);
+                }
+                write_string(write_buffer, (uint8_t*)response.data(), response.size());
+            }
+            next: continue;
         }
     }
 
@@ -440,7 +504,14 @@ private:
         } else if (cmd.size() == 2 && cmd[0] == "persist") {
             std::string& key = cmd[1];
             do_persist(key, out);
-        } else {
+        } else if (cmd.size() >= 2 && cmd[0] == "json.get") {
+            std::vector<std::string> keys;
+            for (size_t i = 1; i < cmd.size(); i++) {
+                keys.push_back(cmd[i]);
+            }
+            do_get_multi_json(keys, out);
+        }
+        else {
             write_err(out);
         }
     }

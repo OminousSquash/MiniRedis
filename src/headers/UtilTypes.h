@@ -1,25 +1,20 @@
 #pragma once
-#include <cstdint>
 #include <vector>
 #include "HashTable.h"
 #include "DLL.h"
 #include "Buffer.h"
+#include <variant>
 
-
-enum {
-    RES_OK = 0,
-    RES_ERR = 1,    // error
-    RES_NX = 2,     // key not found
-};
-
-
-enum JSON {
-    TAG_NIL = 0,    // nil
-    TAG_ERR = 1,    // error code + msg
-    TAG_STR = 2,    // string
-    TAG_INT = 3,    // int64
-    TAG_DBL = 4,    // double
-    TAG_ARR = 5,    // array
+enum ValueType {
+    STR = 0,
+    INT = 1,
+    DOUBLE = 2,
+    JSON = 3,
+    BIN = 4,
+    ARR = 5,
+    ERR = 6,
+    NX = 7,
+    OK = 8
 };
 
 struct Response {
@@ -46,7 +41,8 @@ struct HeapEntry {
 struct Entry {
     HNode node;
     size_t heap_idx;
-    std::string key;
+    ValueType type;
     std::string value;
+    std::string key;
 };
 
