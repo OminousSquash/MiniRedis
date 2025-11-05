@@ -1,0 +1,4 @@
+/Users/varunsrinivasan/Documents/Projects/MiniRedis/build/CMakeFiles/server.dir
+/Users/varunsrinivasan/Documents/Projects/MiniRedis/build/CMakeFiles/client.dir
+/Users/varunsrinivasan/Documents/Projects/MiniRedis/build/CMakeFiles/edit_cache.dir
+/Users/varunsrinivasan/Documents/Projects/MiniRedis/build/CMakeFiles/rebuild_cache.dir
